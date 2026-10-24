@@ -1,0 +1,19 @@
+{
+ "name": "marvel-arena",
+ "version": "1.0.0",
+ "type": "module",
+ "scripts": {
+  "start": "node server/index.js",
+  "demo": "node server/demo.js",
+  "test": "node test.mjs",
+  "test:ui": "node test-ui.mjs"
+ },
+ "dependencies": {
+  "express": "^4.19.2",
+  "socket.io": "^4.7.5"
+ },
+ "devDependencies": {
+  "socket.io-client": "^4.7.5",
+  "jsdom": "^24.1.0"
+ }
+}

@@ -483,7 +483,7 @@ route(
   async () => {
     const s = await api("/admin/settings");
     return {
-      html: `<h1 style="font-size:2.4rem">GAME SETTINGS</h1>${adminNav("/admin/settings")}<div class="panel"><p class="mut">Changes apply to future actions. Stored in <code>data/settings.json</code>.</p><div class="grid g3">${flat(
+      html: `<h1 style="font-size:2.4rem">GAME SETTINGS</h1>${adminNav("/admin/settings")}<div class="panel"><p class="mut">Changes apply to future actions. Stored in MongoDB.</p><div class="grid g3">${flat(
         s,
       )
         .filter(

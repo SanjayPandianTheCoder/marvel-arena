@@ -159,6 +159,7 @@ export const privTeam = (t) => ({
   pointsEarned: t.pointsEarned,
   inventory: t.inventory,
   pointsLedger: t.pointsLedger.slice(-100),
+  giftReady: giftState(t).available,
 });
 export const adminTeam = (t) => ({
   ...privTeam(t),
@@ -1953,11 +1954,59 @@ export const newWallet = () => ({
   inventory: {},
   pointsLedger: [],
   daily: null,
+  gift: null,
 });
 const daily = (t) => {
-  if (t.daily?.day !== day()) t.daily = { day: day(), earned: 0, cash: 0 };
+  if (t.daily?.day !== day()) t.daily = { day: day(), earned: 0 };
   return t.daily;
 };
+/* daily gift: one claim per team per (UTC) day; consecutive days build a 7-day streak that then starts again */
+// day k: giftPoints + giftStreakBonus × (k − 1) points, plus (if giftKits) a small kit, alternating med/energy, and a Med Kit L on day 7
+const giftReward = (k) => {
+  const s = ST();
+  return {
+    day: k,
+    points: s.giftPoints + s.giftStreakBonus * (k - 1),
+    item: !s.giftKits ? null : k === 7 ? "med_l" : k % 2 ? "med_s" : "nrg_s",
+  };
+};
+// `day` is the streak day that today's gift is (or was) for
+export const giftState = (t) => {
+  const yesterday = new Date(now() - 864e5).toISOString().slice(0, 10),
+    last = t.gift?.last,
+    available = last !== day();
+  return {
+    available,
+    day: !available
+      ? t.gift.streak
+      : last === yesterday
+        ? (t.gift.streak % 7) + 1
+        : 1,
+  };
+};
+export function claimGift(teamId) {
+  const t = getTeam(teamId);
+  if (!t) bad("You do not have a team", 403);
+  const g = giftState(t);
+  if (!g.available) bad("Today's gift is already claimed. Come back tomorrow!");
+  const r = giftReward(g.day);
+  t.gift = { last: day(), streak: g.day };
+  if (r.points)
+    pointsTx(t, "gift", r.points, { note: `Daily gift · day ${g.day}` });
+  if (r.item) t.inventory[r.item] = (t.inventory[r.item] || 0) + 1;
+  logEv("store.gift.claimed", {
+    team: t.id,
+    vis: "team",
+    d: { day: g.day, points: r.points, item: r.item },
+  });
+  persist("teams");
+  notify("data");
+  return {
+    ...r,
+    itemName: r.item ? ITEMS[r.item].name : null,
+    total: t.points,
+  };
+}
 const pointsTx = (t, type, amount, o = {}) => {
   t.points += amount;
   t.pointsLedger.push({
@@ -2158,9 +2207,11 @@ export function storeView(teamId) {
     },
     exchange: {
       rate: s.exchangeRate,
-      dailyCap: s.exchangeDailyCap,
-      usedToday: t ? today(t, "cash") : 0,
       blocked: exchangeBlocked(),
+    },
+    gift: t && {
+      ...giftState(t),
+      calendar: [1, 2, 3, 4, 5, 6, 7].map(giftReward),
     },
     me: t && {
       points: t.points,
@@ -2269,14 +2320,8 @@ export function exchange(teamId, points) {
   points = Math.round(+points);
   if (!(points >= 1)) bad("Enter how many points to exchange");
   if (points > t.points) bad(`Not enough points: you have ${t.points}`);
-  const cash = Math.floor(points * s.exchangeRate),
-    d = daily(t);
+  const cash = Math.floor(points * s.exchangeRate);
   if (!cash) bad("That is worth less than 1 cash");
-  if (s.exchangeDailyCap && d.cash + cash > s.exchangeDailyCap)
-    bad(
-      `Daily exchange limit: ${Math.max(0, s.exchangeDailyCap - d.cash)} cash left today`,
-    );
-  d.cash += cash;
   pointsTx(t, "exchange", -points, { note: `→ ${cash} cash` });
   t.balance += cash;
   ledger(t, "exchange", cash, { note: `${points} points exchanged` });

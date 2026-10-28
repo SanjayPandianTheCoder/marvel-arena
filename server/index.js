@@ -11,7 +11,7 @@ import {
   close,
   uid,
   VALID,
-  NAMES,
+  KEYS,
 } from "./store.js";
 import {
   defaults,
@@ -47,6 +47,7 @@ const fillIn = (o, d) => {
 };
 function upgrade() {
   fillIn(db.settings, defaultSettings());
+  delete db.settings.store.exchangeDailyCap; // the exchange has no daily limit any more
   db.teams.forEach((t) => fillIn(t, G.newWallet()));
   db.characters.forEach((c) => (c.level ??= 1));
   persist("settings", "teams", "characters");
@@ -406,6 +407,7 @@ route("post", "/store/use", "player", (req, s) =>
 route("post", "/store/level-up", "player", (req, s) =>
   G.levelUp(s.teamId, req.body?.charId),
 );
+route("post", "/store/gift", "player", (req, s) => G.claimGift(s.teamId));
 route("post", "/store/exchange", "player", (req, s) =>
   G.exchange(s.teamId, req.body?.points),
 );
@@ -952,7 +954,8 @@ route("put", "/admin/settings", "admin", (req, s) => {
     levelCost: [0, 1e6],
     maxLevel: [1, 50],
     exchangeRate: [0, 100],
-    exchangeDailyCap: [0, 1e7],
+    giftPoints: [0, 1e5],
+    giftStreakBonus: [0, 1e4],
     xpPerLevel: [0, 1e6],
     unlockEvery: [1, 20],
     ultimateLevel: [1, 50],
@@ -962,6 +965,7 @@ route("put", "/admin/settings", "admin", (req, s) => {
     if (SO[k] != null) st.store[k] = num(SO[k], lo, hi, "store." + k);
   if (SO.exchangeDuringAuction != null)
     st.store.exchangeDuringAuction = !!SO.exchangeDuringAuction;
+  if (SO.giftKits != null) st.store.giftKits = !!SO.giftKits;
   for (const id of Object.keys(ITEMS))
     if (SO.prices?.[id] != null)
       st.store.prices[id] = num(SO.prices[id], 0, 1e6, ITEMS[id].name + " price");
@@ -994,7 +998,7 @@ route("get", "/admin/history", "admin", (req) => {
 route("get", "/admin/backup", "admin", (req, s) => {
   G.logEv("admin.backup.exported", { actor: actor(s), vis: "admin" });
   const files = {};
-  for (const k of Object.keys(NAMES))
+  for (const k of KEYS)
     if (k !== "admin" && k !== "players") files[k] = db[k];
   files.players = db.players.players.map((p) => ({ ...p }));
   return {
@@ -1048,7 +1052,7 @@ route("post", "/admin/restore", "admin", (req, s) => {
   G.bootAuction();
   G.bootBattles();
   G.tickTournaments();
-  Object.keys(NAMES).forEach((k) => persist(k));
+  KEYS.forEach((k) => persist(k));
   io.emit("ev", { t: "data" });
   io.emit("ev", { t: "auction" });
 });
@@ -1084,7 +1088,7 @@ route("post", "/admin/reset", "admin", (req, s) => {
     actor: actor(s),
     d: { newGameId: db.settings.gameId },
   });
-  Object.keys(NAMES).forEach((k) => persist(k));
+  KEYS.forEach((k) => persist(k));
   io.emit("ev", { t: "data" });
   io.emit("ev", { t: "auction" });
 });

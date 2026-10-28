@@ -1,8 +1,5 @@
-// End-to-end test (starts its own throwaway MongoDB and server; never touches .env or ./data): node test.mjs
+// End-to-end test (starts its own throwaway MongoDB and server; never touches .env or your database): node test.mjs
 import { spawn } from "child_process";
-import fs from "fs";
-import os from "os";
-import path from "path";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { MongoClient } from "mongodb";
 const mongo = await MongoMemoryServer.create({
@@ -10,12 +7,10 @@ const mongo = await MongoMemoryServer.create({
   }),
   M = await new MongoClient(mongo.getUri()).connect(),
   mdb = M.db("arena_test");
-const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "arena-")),
-  PORT = 3077,
+const PORT = 3077,
   URL = "http://localhost:" + PORT;
 const env = {
   ...process.env,
-  DATA_DIR: DIR,
   MONGODB_URI: mongo.getUri(),
   MONGODB_DB: "arena_test",
   PORT: String(PORT),
@@ -624,9 +619,15 @@ ok(
   r.s === 200 && r.j.balance === bal0 + 150 && r.j.points === 490,
   "exchange 150 points for 150 cash",
 );
+r = await call("POST", "/store/exchange", { points: 60 }, A.token);
 ok(
-  (await call("POST", "/store/exchange", { points: 100 }, A.token)).s === 400,
-  "daily exchange cap (200 cash) enforced",
+  r.s === 200 && r.j.balance === bal0 + 210 && r.j.points === 430,
+  "no daily exchange limit (210 cash in one day)",
+);
+ok(
+  (await call("POST", "/store/exchange", { points: 999999 }, A.token)).s ===
+    400,
+  "cannot exchange more points than you have",
 );
 r = await call("POST", "/store/level-up", { charId: thor }, A.token);
 const th3 = (await call("GET", "/store", null, A.token)).j.me.heroes.find(
@@ -640,6 +641,35 @@ ok(
     th3.abilities.find((a) => a.name === "Mjolnir Strike").rank === 1 &&
     th3.nextUnlock?.name === "Asgardian Resilience",
   "level 3 unlocks Lightning Storm; the store shows the next unlock",
+);
+/* daily gift */
+const sg0 = (await call("GET", "/store", null, A.token)).j,
+  inv0 = (await call("GET", "/me", null, A.token)).j.team;
+ok(
+  sg0.gift.available &&
+    sg0.gift.day === 1 &&
+    sg0.gift.calendar.length === 7 &&
+    sg0.gift.calendar[6].item === "med_l" &&
+    inv0.giftReady === true &&
+    !(await call("GET", "/store")).j.gift,
+  "daily gift is ready on day 1 (7-day calendar, only shown to the team)",
+);
+r = await call("POST", "/store/gift", {}, A.token);
+const inv1 = (await call("GET", "/me", null, A.token)).j.team;
+ok(
+  r.s === 200 &&
+    r.j.day === 1 &&
+    r.j.points === 20 &&
+    inv1.points === inv0.points + 20 &&
+    (inv1.inventory.med_s || 0) === (inv0.inventory.med_s || 0) + 1 &&
+    inv1.pointsEarned === inv0.pointsEarned &&
+    inv1.pointsLedger.at(-1).type === "gift" &&
+    !inv1.giftReady,
+  "claiming the gift adds 20 points and a Med Kit S",
+);
+ok(
+  (await call("POST", "/store/gift", {}, A.token)).s === 400,
+  "the gift can be claimed only once a day",
 );
 const me2 = (await call("GET", "/me", null, A.token)).j.team;
 ok(
@@ -1079,6 +1109,18 @@ ok(
   "backup exports data without admin credentials",
 );
 await stop();
+// pretend Alpha claimed day 6 of a streak yesterday: today's gift is day 7
+await mdb.collection("teams").updateOne(
+  { _id: tA.id },
+  {
+    $set: {
+      gift: {
+        last: new Date(Date.now() - 864e5).toISOString().slice(0, 10),
+        streak: 6,
+      },
+    },
+  },
+);
 await start(PORT + 1);
 const U2 = "http://localhost:" + (PORT + 1);
 const t2 = (await call("GET", "/teams", null, null, U2)).j;
@@ -1094,6 +1136,11 @@ const lg = await call(
   U2,
 );
 ok(lg.s === 200, "player can log in after restart");
+r = await call("POST", "/store/gift", {}, lg.j.token, U2);
+ok(
+  r.s === 200 && r.j.day === 7 && r.j.points === 50 && r.j.item === "med_l",
+  "a consecutive-day streak reaches the day-7 gift (50 points + Med Kit L)",
+);
 ok(
   (await call("GET", "/me", null, lg.j.token, U2)).j.team.balance ===
     tA.balance,
@@ -1178,42 +1225,19 @@ ok(
     .startingBudget === 1000,
   "restored default settings are saved",
 );
-/* first start on an empty database imports the old JSON files */
-const LD = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-"));
-fs.writeFileSync(
-  path.join(LD, "teams.json"),
-  JSON.stringify([
-    {
-      id: "tm_old",
-      name: "Old Team",
-      balance: 500,
-      startingBalance: 1000,
-      roster: [],
-      ledger: [],
-      rating: 1000,
-      wins: 0,
-      losses: 0,
-      draws: 0,
-      streak: 0,
-      bestStreak: 0,
-    },
-  ]),
-);
-await start(PORT + 3, { ...env, DATA_DIR: LD, MONGODB_DB: "arena_legacy" });
-const lt = (
+/* first start on an empty database: defaults are generated and written to MongoDB (no local files) */
+await start(PORT + 3, { ...env, MONGODB_DB: "arena_fresh" });
+const ft = (
   await call("GET", "/teams", null, null, "http://localhost:" + (PORT + 3))
 ).j;
 await wait(300);
 await stop();
-const od = await M.db("arena_legacy")
-  .collection("teams")
-  .findOne({ _id: "tm_old" });
+const fdb = M.db("arena_fresh");
 ok(
-  lt.length === 1 &&
-    lt[0].name === "Old Team" &&
-    od?.balance === 500 &&
-    od.points === 0,
-  "old JSON files are imported into an empty database (and upgraded)",
+  ft.length === 0 &&
+    (await fdb.collection("characters").countDocuments()) > 100 &&
+    (await fdb.collection("meta").countDocuments()) === 3,
+  "an empty database starts from generated defaults stored in MongoDB",
 );
 await M.close();
 await mongo.stop();

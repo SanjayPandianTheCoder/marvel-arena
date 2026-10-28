@@ -49,7 +49,7 @@ route(
   async () => {
     const { team: t } = await api("/me");
     return {
-      html: `<div class="row sp"><h1 style="font-size:2.6rem">${esc(t.name)}</h1><span class="rating">Rating ${t.rating}</span></div>
+      html: `<div class="row sp"><h1 style="font-size:2.6rem">${esc(t.name)}</h1><span class="rating">Rating ${t.rating}</span></div>${t.giftReady ? '<div class="panel gold row sp" style="margin-bottom:12px"><b>🎁 Your daily gift is ready</b><a class="btn sm red" href="#/store">Claim it in the store</a></div>' : ""}
  <div class="grid g3"><div class="panel gold"><small>Private balance (only you and the admin can see this)</small><div class="big">${t.balance}</div></div><div class="panel gold"><small>Points (private) · ${t.pointsEarned} earned in total</small><div class="big">${t.points}</div><a class="btn sm red" href="#/store">Open store</a></div><div class="panel"><small>Total spent</small><div class="big" style="color:var(--tx)">${t.spent}</div></div><div class="panel"><small>Record</small><div class="big" style="color:var(--tx)">${t.wins}-${t.losses}-${t.draws}</div><small>streak ${t.streak}</small></div></div>
  <h2 style="margin-top:16px">Roster (${t.roster.length})</h2><div class="grid g3">${t.roster.map((c) => cCard(c)).join("") || '<p class="mut">No characters yet. Win some in the auction.</p>'}</div>
  <div class="grid g3" style="margin-top:12px">${t.roster.map((c) => `<div class="panel"><b>${esc(c.short || c.name)}</b> <span class="tag">Lv ${c.level}</span> ${c.isEliminated ? '<span class="tag bad">eliminated</span>' : ""}${c.restUntil ? `<span class="tag bad" title="Campaign rest">resting until ${new Date(c.restUntil).toLocaleTimeString()}</span>` : ""}<small> persistent condition</small>${hp(c.currentHealth, c.maxHealth)}<div class="hpbar enbar" style="margin-top:4px"><i style="width:${(c.energy / c.maxEnergy) * 100}%"></i><span>Energy ${c.energy}</span></div>${status(Object.fromEntries((c.statusEffects || []).map((s) => [s.status, s])))}</div>`).join("")}</div>
@@ -75,10 +75,13 @@ route(
       ex = s.exchange,
       rw = s.rewards,
       owned = s.items.filter((i) => i.owned),
-      left = ex.dailyCap ? Math.max(0, ex.dailyCap - ex.usedToday) : null,
-      ic = (i) => (i.kind === "hp" ? "➕" : "⚡");
+      ic = (i) => (i.kind === "hp" ? "➕" : "⚡"),
+      g = s.gift,
+      itemName = (id) => s.items.find((i) => i.id === id)?.name;
     return {
       html: `<div class="row sp"><h1 style="font-size:2.6rem">STORE &amp; UPGRADES</h1><span class="rating">${m.points} points</span></div>
+ <div class="panel gold" style="margin-bottom:12px"><div class="row sp"><h3>🎁 Daily gift</h3>${g.available ? `<button class="btn red" data-act="gift">Claim day ${g.day} gift</button>` : '<span class="tag sold">Claimed today · come back tomorrow</span>'}</div><p class="mut" style="margin:4px 0">A free gift every day. Claim on consecutive days to build a 7-day streak with bigger gifts; missing a day starts again at day 1.</p>
+ <div class="gifts">${g.calendar.map((r) => `<div class="gift ${r.day < g.day || (r.day === g.day && !g.available) ? "got" : r.day === g.day ? "now" : ""}"><small>Day ${r.day}</small><b>${r.points} pts</b>${r.item ? `<small>+ ${esc(itemName(r.item))}</small>` : ""}</div>`).join("")}</div></div>
  <div class="grid g3"><div class="panel gold"><small>Points (private, shared by your team)</small><div class="big">${m.points}</div><small>${m.pointsEarned} earned in total${rw.dailyCap ? ` · ${m.earnedToday}/${rw.dailyCap} today` : ""}</small></div><div class="panel"><small>Cash balance (private)</small><div class="big" style="color:var(--tx)">${m.balance}</div></div>
  <div class="panel"><small>How to earn points</small><p style="margin:4px 0">${rw.killBase} per enemy hero defeated × rarity: ${Object.entries(
    rw.rarityMult,
@@ -102,7 +105,7 @@ route(
      )
      .join("") || '<p class="mut">No heroes yet. Win some in the auction.</p>'
  }</div>
- <div class="split" style="margin-top:16px"><div class="panel gold"><h3>Exchange points for cash</h3>${ex.blocked ? `<p class="bad">${esc(ex.blocked)}</p>` : ""}<p class="mut">1 point = ${ex.rate} cash${ex.dailyCap ? ` · ${left} of ${ex.dailyCap} cash left today` : ""}. Cash goes into your private auction balance.</p><div class="row"><input type="number" id="xpts" data-keep min="1" aria-label="Points to exchange" placeholder="Points"><button class="btn red" data-act="xchg" ${ex.blocked ? "disabled" : ""}>Exchange</button></div></div>
+ <div class="split" style="margin-top:16px"><div class="panel gold"><h3>Exchange points for cash</h3>${ex.blocked ? `<p class="bad">${esc(ex.blocked)}</p>` : ""}<p class="mut">1 point = ${ex.rate} cash, no daily limit. Cash goes into your private auction balance.</p><div class="row"><input type="number" id="xpts" data-keep min="1" max="${m.points}" aria-label="Points to exchange" placeholder="Points"><button class="btn red" data-act="xchg" ${ex.blocked ? "disabled" : ""}>Exchange</button><button class="btn" data-act="xchg" data-all="${m.points}" ${ex.blocked || !m.points ? "disabled" : ""}>Exchange all (${m.points})</button></div></div>
  <div class="panel"><h3>Points history</h3><div class="log" style="max-height:220px">${
    [...m.pointsLedger]
      .reverse()
@@ -143,8 +146,15 @@ act("lvl", async (b) => {
   );
   render(true);
 });
-act("xchg", async () => {
-  const p = +$("#xpts").value;
+act("gift", async () => {
+  const r = await api("/store/gift", { method: "POST" });
+  toast(
+    `🎁 Day ${r.day}: +${r.points} points${r.itemName ? " + " + r.itemName : ""}`,
+  );
+  render(true);
+});
+act("xchg", async (b) => {
+  const p = +(b.dataset.all || $("#xpts").value);
   if (!p) throw new Error("Enter how many points to exchange");
   const r = await api("/store/exchange", {
     method: "POST",

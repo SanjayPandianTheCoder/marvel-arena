@@ -3,7 +3,7 @@ import { statsFor, priceFor } from "./lib/balance.js";
 import { avg } from "./lib/util.js";
 import { uid } from "./store.js";
 const U = {
-  // universal actions (configurable in settings.json)
+  // universal actions (configurable in Admin → Settings)
   attack: { power: 1, cost: 0 },
   heavy: { power: 1.6, cost: 20, cd: 1, acc: 0.9 },
   defend: { mag: 0.5, gain: 10 },
@@ -328,9 +328,11 @@ export const defaultSettings = () => ({
     ultimateLevel: 8, // ultimates unlock at this level
     rankEvery: 3, // an unlocked ability gains a rank every this many levels (max rank 3)
     rankBonus: 0.15, // power/heal per rank above 1; rank 3 also cuts the cooldown by 1
-    exchangeRate: 1, // cash per point; 0 disables the exchange
-    exchangeDailyCap: 200, // max cash per team per day; 0 = no cap
+    exchangeRate: 1, // cash per point, no daily limit; 0 disables the exchange
     exchangeDuringAuction: false,
+    giftPoints: 20, // daily gift on day 1 of a streak
+    giftStreakBonus: 5, // + this per consecutive day (streak of 7, then it starts again)
+    giftKits: true, // daily gift also includes a kit (a Med Kit L on day 7)
   },
 });
 export const defaultAuction = () => ({

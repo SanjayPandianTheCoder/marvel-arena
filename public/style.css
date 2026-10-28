@@ -631,6 +631,29 @@ body {
   color: var(--gold);
   font-weight: bold;
 }
+.gifts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+.gift {
+  border: 1px solid #ffffff22;
+  border-radius: 6px;
+  padding: 6px;
+  text-align: center;
+  background: var(--pn2);
+}
+.gift small {
+  display: block;
+}
+.gift.got {
+  opacity: 0.45;
+}
+.gift.now {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px var(--gold);
+}
 .replay-ctl {
   display: flex;
   gap: 6px;

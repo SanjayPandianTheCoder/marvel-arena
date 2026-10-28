@@ -12,9 +12,9 @@ npm start              # http://localhost:3000   (PORT env to change)
 ```
 
 Configuration comes from environment variables or `.env` (gitignored; real environment variables win): `MONGODB_URI` (required, e.g. Atlas `mongodb+srv://…`; URL-encode special characters in the password, and allow your IP in Atlas → Network Access), `MONGODB_DB` (default `marvel-arena`), `PORT`, `ADMIN_PASSWORD` / `ADMIN_USER`. While `ADMIN_PASSWORD` is set it is authoritative: it replaces the stored admin password (kept only as a scrypt hash) on every start, so remove it if you want to change the password from the admin area instead. The server will not start without a reachable database.
-_First run on an empty database:_ if `data/*.json` files from the old file store exist (or `DATA_DIR`), they are imported once; otherwise characters/settings are generated and an admin account is created with a **random password printed once in the console** (or set `ADMIN_PASSWORD` / `ADMIN_USER`). The JSON files are only read, never changed; after the import MongoDB is the only store.
+MongoDB is the only data store: nothing is read from or written to local files (`.env` holds configuration only). _First run on an empty database:_ characters and settings are generated and an admin account is created with a **random password printed once in the console** (or set `ADMIN_PASSWORD` / `ADMIN_USER`).
 _Sample data:_ admin `admin` / `Admin#12345` · players `tony`, `charles` / `demo12345`. **These are public demo credentials – change them before real use.**
-Play on several devices: open `http://<your-ip>:3000` on each. Tests: `npm test` (backend, 124 checks) and `npm run test:ui` (jsdom UI smoke test). Both start a throwaway in-memory MongoDB (`mongodb-memory-server`, downloaded on first use) and never touch `.env` or your database.
+Play on several devices: open `http://<your-ip>:3000` on each. Tests: `npm test` (backend, 129 checks) and `npm run test:ui` (jsdom UI smoke test). Both start a throwaway in-memory MongoDB (`mongodb-memory-server`, downloaded on first use) and never touch `.env` or your database.
 
 ## Database (MongoDB collections)
 
@@ -42,7 +42,7 @@ Team A challenges team B and sets the **squad size N** (1 … roster limit; defa
 - **Campaign rest:** heroes who took the field in a campaign battle rest for `campaignRestMin` minutes (default 30) before they can play campaign again. Admin heal ends the rest.
 - **Resolution order:** switches → costs/cooldowns + self buffs → heals → all attacks computed from the same pre-damage state and applied together → statuses tick, energy regenerates, defeats recorded. Switching consumes the action; the incoming hero takes the hit; health never resets.
 - **Damage:** `attack × ability power × 100/(100+defence) × (1±randomness) × crit(×1.5) × (1−guard)`; evasion `5% + speed difference/600 + dodge bonus` (max 75%); rage +30% attack/−25% defence; slow −speed; root blocks dodge/switch; counter halves and reflects; clamped to 1…60% of max health. Faction bonus: +5% attack per squad member beyond 2 sharing a category (max +15%).
-- **Persistence:** every resolved turn is saved. _Arena mode_ restores everyone to full after the battle; _Campaign mode_ writes health/energy/status back to `characters.json` after each turn (winners recover `winRecoveryPct`; admin can heal).
+- **Persistence:** every resolved turn is saved. _Arena mode_ restores everyone to full after the battle; _Campaign mode_ writes health/energy/status back to the `characters` collection after each turn (winners recover `winRecoveryPct`; admin can heal).
 - **Safety:** actions carry the turn number; a resolved turn can't be resolved twice; late/stale/duplicate submissions are rejected or idempotent; timeouts apply `timeoutAction` (default Defend); repeated timeouts forfeit; reconnecting simply reloads the saved battle. Ranked battles use Elo.
 
 ## Rewards, store & hero levels
@@ -55,7 +55,8 @@ Points belong to the **team** and are private like the balance (`/api/me`, `/api
 - **Hero XP:** every hero in a finished battle earns XP: 20 per battle of 3+ turns, 15 per enemy it defeated, 20 per win (scaled down for repeat battles like points). At `xpPerLevel (100) × level` XP it levels up for free. Practice battles give none.
 - **Unlocks:** abilities unlock in listed order at levels 1, 3, 5, 7… (`unlockEvery` 2) and ultimates at level 8 (`ultimateLevel`); an ability's own `unlockLevel` overrides this. Locked abilities appear disabled in battle ("Unlocks at Lv 5"). Every 3 levels after unlocking (`rankEvery`), an ability ranks up (rank II/III: +15% power/heal each; rank III also has 1 turn less cooldown).
 - **Perks:** level 5 *Battle-hardened* (+5 energy every turn), level 10 *Veteran* (enters the fight behind a 30% shield for one turn).
-- **Exchange:** 1 point = 1 cash added to the private balance, at most 200 cash per team per day, closed while an auction is live or paused (`exchangeDuringAuction`).
+- **Exchange:** 1 point = 1 cash added to the private balance, no daily limit (any amount up to the team's points), closed while an auction is live or paused (`exchangeDuringAuction`).
+- **Daily gift:** each team claims one free gift per day (UTC) in the store. Consecutive days build a 7-day streak: day k gives `giftPoints + giftStreakBonus × (k − 1)` points (20 … 50) plus a kit (Med Kit S on odd days, Energy Kit S on even days, Med Kit L on day 7; `giftKits` to turn off); after day 7, or after a missed day, it starts again at day 1. Gift points are spendable but don't count towards the public `pointsEarned`.
 
 ## Pages
 
@@ -65,7 +66,7 @@ Landing · Player login/register · Admin login · Lobby · Character catalogue 
 
 **Auth:** `POST /api/register {username,password,teamId|teamName}` · `POST /api/login` · `POST /api/admin/login` · `POST /api/logout` · `POST /api/admin/password`
 **Public:** `GET /api/state, /characters, /teams, /teams/open, /leaderboard, /analytics, /history?team&char&battle&type&from&to, /auction, /battles, /battles/:id, /tournaments`
-**Store:** `GET /api/store` (public prices; own points, heroes and inventory when logged in as a player) · `POST /api/store/buy {item,qty}` · `/store/use {item,charId}` · `/store/level-up {charId}` · `/store/exchange {points}`
+**Store:** `GET /api/store` (public prices; own points, heroes and inventory when logged in as a player) · `POST /api/store/buy {item,qty}` · `/store/use {item,charId}` · `/store/level-up {charId}` · `/store/gift` · `/store/exchange {points}`
 **Player:** `GET /api/me` · `POST /api/auction/bid {amount}` · `POST /api/auction/pass` · `POST /api/battles {opponentTeamId,mode,ranked,squadSize,bans}` · `POST /api/battles/practice {squadSize}` · `GET /api/battles/suggest` · `POST /api/battles/:id/respond {accept}` · `/counter {squadSize}` · `/ban {charId}` · `/squad {charIds}` (exactly N, first starts) · `/select {charId}` (replacement) · `/action {turn,key}` · `/forfeit` · `/rematch` · `/dispute {reason}`
 **Admin:** `GET /api/admin/overview, /teams, /history, /settings, /characters/export, /backup` · `POST|PUT|DELETE /api/admin/characters[/:id]` (delete = archive; needs `{confirm:true}`) · `POST /api/admin/characters/import` · `POST|PUT|DELETE /api/admin/teams[/:id]` (PUT accepts `balance`, `points`), `/players[/:id]` · `POST /api/admin/auction/{configure,start,pause,resume,end,lots,retain,bonus,emergency,correct,heal}` · `POST /api/admin/battles/:id/{cancel,forfeit,dispute/:d}` · `POST /api/admin/tournaments {name,teamIds,squadSize,mode,ranked,prize}`, `/admin/tournaments/:id/{cancel,tick}` · `PUT /api/admin/settings` · `POST /api/admin/restore {confirm,files}` · `POST /api/admin/reset {confirm:"RESET"}`
 Errors are `{error: "message"}` with 400/401/403/404/429. Realtime: Socket.IO emits `ev` `{t:'auction'|'battle'|'data'|'presence'}`; clients re-fetch their own filtered view.

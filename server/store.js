@@ -1,4 +1,4 @@
-// Persistence: in-memory cache + MongoDB. All game mutations are synchronous on the cache (so they cannot interleave);
+// Persistence: in-memory cache + MongoDB (the only store). All game mutations are synchronous on the cache (so they cannot interleave);
 // persist(k) marks a part dirty and a serialised queue writes only the documents that changed since the last write.
 import fs from "fs";
 import path from "path";
@@ -7,24 +7,11 @@ import { parseEnv } from "util";
 import { randomBytes } from "crypto";
 import { MongoClient } from "mongodb";
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-// .env never overrides variables that are already set (tests point MONGODB_URI at a throwaway server)
+// .env holds configuration only (connection string, admin password); it never overrides variables that are already set
 try {
   const env = parseEnv(fs.readFileSync(path.join(ROOT, ".env"), "utf8"));
   for (const k in env) process.env[k] ??= env[k];
 } catch {}
-// JSON files from the old file store, imported once into an empty database
-export const LEGACY_DIR = process.env.DATA_DIR || path.join(ROOT, "data");
-export const NAMES = {
-  characters: "characters.json",
-  teams: "teams.json",
-  players: "players.json",
-  auction: "auction.json",
-  battles: "battles.json",
-  tournaments: "tournaments.json",
-  history: "game-history.json",
-  settings: "settings.json",
-  admin: "admin.json",
-};
 export const db = {};
 export const uid = (p) => p + "_" + randomBytes(5).toString("hex");
 export const VALID = {
@@ -66,6 +53,8 @@ const PARTS = {
   ],
   admin: [{ coll: "meta", type: "single", id: "admin", get: () => db.admin }],
 };
+// the parts of db, in load order (backup/restore and reset iterate over these)
+export const KEYS = Object.keys(PARTS);
 const pkey = (p) => p.coll + ":" + (p.id || "");
 let client = null,
   mdb = null;
@@ -105,18 +94,6 @@ async function read(k) {
     exact,
   };
 }
-function readLegacy() {
-  const out = {};
-  for (const k in NAMES) {
-    try {
-      const v = JSON.parse(
-        fs.readFileSync(path.join(LEGACY_DIR, NAMES[k]), "utf8"),
-      );
-      if (VALID[k](v)) out[k] = v;
-    } catch {}
-  }
-  return out;
-}
 export async function load(defaults) {
   const uri = process.env.MONGODB_URI;
   if (!uri)
@@ -131,17 +108,11 @@ export async function load(defaults) {
     counts = await Promise.all(
       colls.map((c) => mdb.collection(c).estimatedDocumentCount()),
     ),
-    fresh = counts.every((n) => !n),
-    legacy = fresh ? readLegacy() : {};
-  if (Object.keys(legacy).length)
-    console.log(
-      `[db] empty database: imported ${Object.keys(legacy).join(", ")} from ${LEGACY_DIR}`,
-    );
+    fresh = counts.every((n) => !n);
   for (const k in PARTS) {
     let v,
       asIs = false;
-    if (k in legacy) v = legacy[k];
-    else if (!fresh) {
+    if (!fresh) {
       const r = await read(k);
       v = r.v;
       if (v !== undefined && !VALID[k](v)) {

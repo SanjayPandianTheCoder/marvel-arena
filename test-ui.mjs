@@ -1,11 +1,7 @@
 import { spawn } from "child_process";
-import fs from "fs";
-import os from "os";
-import path from "path";
 import { JSDOM } from "jsdom";
 import { MongoMemoryServer } from "mongodb-memory-server";
-const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "ui-")),
-  PORT = 3090,
+const PORT = 3090,
   U = "http://localhost:" + PORT,
   mongo = await MongoMemoryServer.create({
     instance: { launchTimeout: 60000 },
@@ -13,7 +9,6 @@ const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "ui-")),
 const srv = spawn("node", ["server/index.js"], {
   env: {
     ...process.env,
-    DATA_DIR: DIR,
     MONGODB_URI: mongo.getUri(),
     MONGODB_DB: "arena_ui",
     PORT: String(PORT),
@@ -136,8 +131,20 @@ ok(
     /Med Kit S/.test(stt) &&
     /Energy Kit L/.test(stt) &&
     /Exchange points/.test(stt) &&
-    /Hero progression/.test(stt),
+    /Hero progression/.test(stt) &&
+    /no daily limit/.test(stt),
   "Store page renders kits, progression and exchange",
+);
+ok(
+  /Daily gift/.test(stt) && /Day 7/.test(stt),
+  "store shows the daily gift calendar",
+);
+w.document.querySelector("[data-act=gift]").click();
+await wait(900);
+ok(
+  /Claimed today/.test(w.document.getElementById("view").textContent) &&
+    /Day 1: \+20 points/.test(w.document.getElementById("toast").textContent),
+  "claiming the daily gift in the UI",
 );
 const bl = await go(w, "#/battles");
 ok(

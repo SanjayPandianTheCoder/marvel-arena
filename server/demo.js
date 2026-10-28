@@ -1,7 +1,8 @@
-// Creates sample data (demo admin + two demo teams). Demo passwords are public – change them or delete data/ before real use.
+// Creates sample data (demo admin + two demo teams). Demo passwords are public – change them before real use. Writes to the MongoDB database from MONGODB_URI.
 process.env.NO_LISTEN = "1";
 const { db, persist, idle, uid } = await import("./store.js");
 const { hashPw } = await import("./auth.js");
+const { newWallet } = await import("./game.js");
 await import("./index.js");
 db.admin = { username: "admin", ...hashPw("Admin#12345") };
 if (!db.players.players.length) {
@@ -24,6 +25,7 @@ if (!db.players.players.length) {
       draws: 0,
       streak: 0,
       bestStreak: 0,
+      ...newWallet(),
       createdAt: new Date().toISOString(),
     };
     db.teams.push(t);

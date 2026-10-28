@@ -149,6 +149,55 @@ const SPEC = {
     A("Regrowth", "heal", 0, 25, 3, { heal: 0.15, desc: "Limited healing" }),
   ],
 };
+// store items: effects are fixed here, prices live in settings.store.prices
+export const ITEMS = {
+  med_s: { name: "Med Kit S", kind: "hp", pct: 0.2 },
+  med_m: { name: "Med Kit M", kind: "hp", pct: 0.5 },
+  med_l: { name: "Med Kit L", kind: "hp", pct: 1 },
+  nrg_s: { name: "Energy Kit S", kind: "energy", pct: 0.2 },
+  nrg_m: { name: "Energy Kit M", kind: "energy", pct: 0.5 },
+  nrg_l: { name: "Energy Kit L", kind: "energy", pct: 1 },
+};
+// passive perks a hero gains at a level (effects are applied in game.js)
+export const PERKS = [
+  {
+    id: "hardened",
+    level: 5,
+    name: "Battle-hardened",
+    desc: "+5 energy every turn",
+  },
+  {
+    id: "veteran",
+    level: 10,
+    name: "Veteran",
+    desc: "Enters the fight behind a 30% shield for one turn",
+  },
+];
+// team-up moves: either hero gets the move while the other is alive in the same squad (matched by name)
+const TU = (id, a, b, name, kind, power, cost, cd, o = {}) => ({
+  id,
+  heroes: [a, b],
+  name,
+  kind,
+  power,
+  cost,
+  cd,
+  ...o,
+});
+export const TEAMUPS = [
+  TU("assemble", "Iron Man (Tony Stark)", "Captain America (Steve Rogers)", "Avengers Assemble", "attack", 2.2, 35, 4, { desc: "Repulsors and shield strike together" }),
+  TU("thunder", "Thor Odinson", "Hulk (Bruce Banner)", "Thunder & Fury", "attack", 2.4, 40, 4, { desc: "Lightning-charged smash" }),
+  TU("endofline", "Captain America (Steve Rogers)", "Winter Soldier (Bucky Barnes)", "End of the Line", "attack", 2, 30, 4, { desc: "Old friends fight as one" }),
+  TU("budapest", "Black Widow (Natasha Romanoff)", "Hawkeye (Clint Barton)", "Budapest Protocol", "attack", 1.8, 30, 4, { foe: { status: "slow", turns: 2, mag: 0.4, chance: 1 }, desc: "Arrows and bites: slows the enemy" }),
+  TU("groot", "Rocket Raccoon", "Groot", "We Are Groot", "attack", 2.2, 35, 4, { desc: "Rocket rides Groot into battle" }),
+  TU("guardians", "Star-Lord (Peter Quill)", "Gamora", "Guardians' Gambit", "attack", 2, 30, 4, { desc: "A plan, of sorts" }),
+  TU("fastball", "Wolverine (Logan)", "Colossus (Piotr Rasputin)", "Fastball Special", "attack", 2.5, 40, 4, { desc: "Colossus throws Wolverine" }),
+  TU("phoenix", "Cyclops (Scott Summers)", "Jean Grey / Phoenix", "Psychic Link", "attack", 2.3, 35, 4, { desc: "Optic blast guided by telepathy" }),
+  TU("clobber", "Human Torch (Johnny Storm)", "The Thing (Ben Grimm)", "Flame On, Clobberin' Time", "attack", 2.2, 35, 4, { desc: "Fire and stone" }),
+  TU("formation", "Mister Fantastic (Reed Richards)", "Invisible Woman (Sue Storm)", "Fantastic Formation", "buff", 0, 25, 4, { self: { status: "guard", turns: 2, mag: 0.6 }, desc: "Force field wrapped in elastic armour" }),
+  TU("hire", "Luke Cage (Power Man)", "Iron Fist (Danny Rand)", "Heroes for Hire", "attack", 2.2, 35, 4, { desc: "Unbreakable skin, iron fist" }),
+  TU("mystic", "Doctor Strange (Stephen Strange)", "Wong", "Mystic Arts", "heal", 0, 30, 4, { heal: 0.25, desc: "Sorcerers mend wounds together" }),
+];
 export function buildChars() {
   const out = [];
   let cat = "";
@@ -206,6 +255,7 @@ export function buildChars() {
       ownerTeamId: null,
       availability: "available",
       isEliminated: false,
+      level: 1,
       record: { battles: 0, wins: 0 },
     });
   });
@@ -246,7 +296,41 @@ export const defaultSettings = () => ({
     startRating: 1000,
     kFactor: 24,
     summaryMs: 3500,
+    squadSize: 3, // default heroes per side; the challenger picks the actual number
+    chargePerTurn: 10, // ultimate charge (0–100) gained by the active hero each turn
+    chargeDealt: 0.6, // charge per 1% of the target's max health dealt
+    chargeTaken: 0.4, // charge per 1% of own max health taken
+    campaignRestMin: 30, // campaign: heroes who fought rest this many minutes; 0 = off
     actions: U,
+  },
+  rewards: {
+    killBase: 10,
+    rarityMult: { Common: 1, Rare: 1.5, Epic: 2.5, Legendary: 4 },
+    levelBonus: 0.1, // +10% kill points per level of the defeated hero above 1
+    winBonus: 50,
+    drawBonus: 15,
+    flawlessBonus: 25,
+    minTurnsForBonus: 3, // no win/draw bonus for battles shorter than this (quick-forfeit farming)
+    repeatWindowHours: 24,
+    repeatFactor: 0.5, // points × this for every earlier battle vs the same team inside the window
+    dailyCap: 0, // max battle points per team per day; 0 = no cap
+    squadBonus: 0.25, // win/draw/flawless bonus × (1 + this per hero above 1 per side)
+    xp: { battle: 20, kill: 15, win: 20 }, // hero XP: per battle fought (3+ turns), per enemy defeated, per win
+  },
+  store: {
+    prices: { med_s: 30, med_m: 70, med_l: 120, nrg_s: 20, nrg_m: 45, nrg_l: 80 },
+    maxItemsPerBattle: 2,
+    levelCost: 50, // × rarity multiplier × current level
+    maxLevel: 10,
+    levelGain: { attack: 0.04, defence: 0.03, maxHealth: 0.04 },
+    xpPerLevel: 100, // XP for the next level = this × current level; 0 = no levelling from XP
+    unlockEvery: 2, // abilities unlock at levels 1, 1+this, 1+2×this… (in listed order)
+    ultimateLevel: 8, // ultimates unlock at this level
+    rankEvery: 3, // an unlocked ability gains a rank every this many levels (max rank 3)
+    rankBonus: 0.15, // power/heal per rank above 1; rank 3 also cuts the cooldown by 1
+    exchangeRate: 1, // cash per point; 0 disables the exchange
+    exchangeDailyCap: 200, // max cash per team per day; 0 = no cap
+    exchangeDuringAuction: false,
   },
 });
 export const defaultAuction = () => ({
@@ -266,6 +350,7 @@ export const defaults = (k) =>
     players: () => ({ players: [], sessions: {} }),
     auction: defaultAuction,
     battles: () => [],
+    tournaments: () => [],
     history: () => [],
     settings: defaultSettings,
     admin: () => null,

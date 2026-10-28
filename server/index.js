@@ -3,12 +3,22 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import path from "path";
 import { fileURLToPath } from "url";
-import { db, load, persist, idle, uid, VALID, NAMES } from "./store.js";
+import {
+  db,
+  load,
+  persist,
+  idle,
+  close,
+  uid,
+  VALID,
+  NAMES,
+} from "./store.js";
 import {
   defaults,
   defaultAuction,
   defaultSettings,
   buildChars,
+  ITEMS,
 } from "./seed.js";
 import { hashPw, verifyPw, newToken } from "./auth.js";
 import * as G from "./game.js";
@@ -22,8 +32,26 @@ const PUB = path.join(
 );
 app.use(express.json({ limit: "4mb" }));
 app.use(express.static(PUB));
-const warnings = load(defaults);
+const warnings = await load(defaults).catch((e) => {
+  console.error("[db] cannot connect to MongoDB:", e.message);
+  process.exit(1);
+});
 warnings.forEach((w) => console.warn("[data]", w));
+// fill in fields added after a save was created (rewards/store settings, team wallets, hero levels)
+const fillIn = (o, d) => {
+  for (const k in d)
+    if (o[k] == null) o[k] = d[k];
+    else if (d[k] && typeof d[k] === "object" && typeof o[k] === "object")
+      fillIn(o[k], d[k]);
+  return o;
+};
+function upgrade() {
+  fillIn(db.settings, defaultSettings());
+  db.teams.forEach((t) => fillIn(t, G.newWallet()));
+  db.characters.forEach((c) => (c.level ??= 1));
+  persist("settings", "teams", "characters");
+}
+upgrade();
 if (!db.admin) {
   const pw = process.env.ADMIN_PASSWORD || newToken().slice(0, 12);
   db.admin = { username: process.env.ADMIN_USER || "admin", ...hashPw(pw) };
@@ -31,10 +59,19 @@ if (!db.admin) {
   console.log(
     `\n  Admin account created → username: ${db.admin.username}  password: ${pw}\n  (shown once; set ADMIN_PASSWORD to choose your own)\n`,
   );
+} else if (
+  process.env.ADMIN_PASSWORD &&
+  !verifyPw(process.env.ADMIN_PASSWORD, db.admin.salt, db.admin.hash)
+) {
+  // ADMIN_PASSWORD (e.g. from .env) is authoritative: it replaces the stored admin password on start
+  db.admin = { username: db.admin.username, ...hashPw(process.env.ADMIN_PASSWORD) };
+  persist("admin");
+  console.log("  Admin password set from ADMIN_PASSWORD");
 }
 G.setNotify((t, id) => io.emit("ev", { t, id }));
 G.bootAuction();
 G.bootBattles();
+G.tickTournaments();
 /* ---------------- sessions & helpers ---------------- */
 const HOURS = 12,
   online = new Map();
@@ -146,6 +183,7 @@ function newTeam(name, balance) {
     draws: 0,
     streak: 0,
     bestStreak: 0,
+    ...G.newWallet(),
     createdAt: new Date().toISOString(),
   };
   db.teams.push(t);
@@ -224,7 +262,7 @@ route("post", "/admin/login", null, (req) => {
   const { username, password } = req.body || {};
   if (
     username !== db.admin.username ||
-    password !== "warmachineroX"
+    !verifyPw(password, db.admin.salt, db.admin.hash)
   )
     bad("Wrong admin credentials", 401);
   G.logEv("admin.login", {
@@ -259,6 +297,7 @@ route("get", "/state", null, (req, s) => ({
   ).length,
   settings: {
     rosterLimit: db.settings.rosterLimit,
+    squadSize: Math.min(db.settings.battle.squadSize, db.settings.rosterLimit),
     allowSelfTeam: db.settings.auction.allowSelfTeam,
     battleMode: db.settings.battle.mode,
     actionTimer: db.settings.battle.actionTimer,
@@ -296,6 +335,7 @@ route("get", "/leaderboard", null, () =>
       draws: t.draws,
       streak: t.streak,
       bestStreak: t.bestStreak,
+      pointsEarned: t.pointsEarned,
       winRate:
         t.wins + t.losses + t.draws
           ? Math.round((t.wins / (t.wins + t.losses + t.draws)) * 100)
@@ -353,6 +393,22 @@ route("post", "/auction/bid", "player", (req, s) => {
 route("post", "/auction/pass", "player", (req, s) => {
   G.passLot(s.teamId);
 });
+/* ---------------- store, hero levels, exchange ---------------- */
+route("get", "/store", null, (req, s) =>
+  G.storeView(s?.role === "player" ? s.teamId : null),
+);
+route("post", "/store/buy", "player", (req, s) =>
+  G.buyItem(s.teamId, req.body?.item, req.body?.qty ?? 1),
+);
+route("post", "/store/use", "player", (req, s) =>
+  G.useItem(s.teamId, req.body?.item, req.body?.charId),
+);
+route("post", "/store/level-up", "player", (req, s) =>
+  G.levelUp(s.teamId, req.body?.charId),
+);
+route("post", "/store/exchange", "player", (req, s) =>
+  G.exchange(s.teamId, req.body?.points),
+);
 /* ---------------- battles ---------------- */
 const bt = (id) => G.getBattle(id) || bad("Battle not found", 404);
 route("get", "/battles", null, (req, s) =>
@@ -366,14 +422,19 @@ route("get", "/battles", null, (req, s) =>
       ranked: b.ranked,
       turn: b.turn,
       created: b.created,
-      teams: b.teams.map((id) => ({ id, name: G.getTeam(id)?.name })),
+      teams: b.teams.map((id) => ({ id, name: G.teamName(id) })),
       winner: b.winner,
       result: b.result,
       invite: b.invite,
+      squadSize: b.squadSize || null,
+      bans: b.bans || 0,
+      practice: !!b.practice,
+      tournament: b.tournament?.name || null,
       mine: !!s?.teamId && b.teams.includes(s.teamId),
       disputes: b.disputes.length,
     })),
 );
+route("get", "/battles/suggest", "player", (req, s) => G.suggest(s.teamId));
 route("get", "/battles/:id", null, (req, s) => {
   const b = bt(req.params.id),
     v = G.battleView(b, s, s?.role === "admin");
@@ -386,9 +447,24 @@ route("post", "/battles", "player", (req, s) => {
   const b = G.challenge(s.teamId, req.body?.opponentTeamId, req.body || {});
   return { id: b.id };
 });
+route("post", "/battles/practice", "player", (req, s) => ({
+  id: G.practice(s.teamId, req.body || {}).id,
+}));
 route("post", "/battles/:id/respond", "player", (req, s) => {
   G.respond(bt(req.params.id), s.teamId, !!req.body?.accept);
 });
+route("post", "/battles/:id/counter", "player", (req, s) => {
+  G.counter(bt(req.params.id), s.teamId, req.body?.squadSize);
+});
+route("post", "/battles/:id/ban", "player", (req, s) =>
+  G.ban(bt(req.params.id), s.teamId, req.body?.charId),
+);
+route("post", "/battles/:id/squad", "player", (req, s) =>
+  G.pickSquad(bt(req.params.id), s.teamId, req.body?.charIds),
+);
+route("post", "/battles/:id/rematch", "player", (req, s) => ({
+  id: G.rematch(bt(req.params.id), s.teamId).id,
+}));
 route("post", "/battles/:id/select", "player", (req, s) =>
   G.selectChar(bt(req.params.id), s.teamId, req.body?.charId),
 );
@@ -401,6 +477,9 @@ route("post", "/battles/:id/forfeit", "player", (req, s) => {
 route("post", "/battles/:id/dispute", "player", (req, s) => {
   G.dispute(bt(req.params.id), s.teamId, req.body?.reason);
 });
+route("get", "/tournaments", null, () =>
+  db.tournaments.slice().reverse().map(G.tournamentView),
+);
 /* ---------------- admin ---------------- */
 const abilityOk = (a, i) => {
   const k = ["attack", "buff", "heal"];
@@ -436,6 +515,10 @@ const abilityOk = (a, i) => {
       : {}),
     desc: String(a.desc || "").slice(0, 160),
     ultimate: !!a.ultimate,
+    // optional: otherwise the level comes from the ability's position and the unlock settings
+    ...(a.unlockLevel != null
+      ? { unlockLevel: num(a.unlockLevel, 1, 50, "Unlock level") }
+      : {}),
   };
 };
 function cleanChar(b, old) {
@@ -449,6 +532,7 @@ function cleanChar(b, old) {
         statusEffects: [],
         ownerTeamId: null,
         isEliminated: false,
+        level: 1,
         record: { battles: 0, wins: 0 },
         powers: [],
         archetype: "S",
@@ -488,7 +572,7 @@ route("get", "/admin/overview", "admin", () => ({
     .map((b) => ({
       id: b.id,
       state: b.state,
-      teams: b.teams.map((id) => G.getTeam(id)?.name),
+      teams: b.teams.map(G.teamName),
       turn: b.turn,
       disputes: b.disputes.filter((d) => !d.resolution).length,
     })),
@@ -607,7 +691,7 @@ route("post", "/admin/teams", "admin", (req, s) => {
 route("put", "/admin/teams/:id", "admin", (req, s) => {
   const t = G.getTeam(req.params.id) || bad("Not found", 404),
     b = req.body || {},
-    before = { name: t.name, balance: t.balance };
+    before = { name: t.name, balance: t.balance, points: t.points };
   if (b.name != null) {
     const n = str(b.name, 2, 24, "Team name");
     if (
@@ -631,10 +715,14 @@ route("put", "/admin/teams/:id", "admin", (req, s) => {
     });
     t.balance = nb;
   }
+  if (b.points != null) G.setPoints(t, num(b.points, 0, 1e7, "Points"));
   G.logEv("admin.team.updated", {
     actor: actor(s),
     team: t.id,
-    d: { before, after: { name: t.name, balance: t.balance } },
+    d: {
+      before,
+      after: { name: t.name, balance: t.balance, points: t.points },
+    },
   });
   persist("teams");
   io.emit("ev", { t: "data" });
@@ -763,6 +851,19 @@ route("post", "/admin/battles/:id/forfeit", "admin", (req, s) => {
 route("post", "/admin/battles/:id/dispute/:d", "admin", (req, s) => {
   G.resolveDispute(bt(req.params.id), req.params.d, req.body?.note, actor(s));
 });
+const tr = (id) => G.getTour(id) || bad("Tournament not found", 404);
+route("post", "/admin/tournaments", "admin", (req, s) =>
+  G.tournamentView(G.createTournament(req.body || {}, actor(s))),
+);
+route("post", "/admin/tournaments/:id/cancel", "admin", (req, s) => {
+  if (req.body?.confirm !== true) bad("Confirmation required");
+  G.cancelTournament(tr(req.params.id), actor(s));
+});
+// starts matches that were waiting (e.g. after the admin cancelled a match's battle)
+route("post", "/admin/tournaments/:id/tick", "admin", (req) => {
+  tr(req.params.id);
+  G.tickTournaments();
+});
 route("get", "/admin/settings", "admin", () => db.settings);
 route("put", "/admin/settings", "admin", (req, s) => {
   const b = req.body || {},
@@ -799,6 +900,11 @@ route("put", "/admin/settings", "admin", (req, s) => {
     winRecoveryPct: [0, 1],
     kFactor: [1, 100],
     summaryMs: [500, 20000],
+    squadSize: [1, 30],
+    chargePerTurn: [0, 100],
+    chargeDealt: [0, 10],
+    chargeTaken: [0, 10],
+    campaignRestMin: [0, 1440],
   }))
     if (B[k] != null) st.battle[k] = num(B[k], lo, hi, k);
   for (const k of ["allowSwitch", "allowPass", "factionBonus", "ranked"])
@@ -820,6 +926,48 @@ route("put", "/admin/settings", "admin", (req, s) => {
           if (B.actions[k][f] != null)
             st.battle.actions[k][f] = num(B.actions[k][f], 0, 10, k + "." + f);
   }
+  const RW = b.rewards || {};
+  for (const [k, [lo, hi]] of Object.entries({
+    killBase: [0, 10000],
+    levelBonus: [0, 10],
+    winBonus: [0, 1e5],
+    drawBonus: [0, 1e5],
+    flawlessBonus: [0, 1e5],
+    minTurnsForBonus: [0, 100],
+    repeatWindowHours: [0, 720],
+    repeatFactor: [0, 1],
+    dailyCap: [0, 1e7],
+    squadBonus: [0, 5],
+  }))
+    if (RW[k] != null) st.rewards[k] = num(RW[k], lo, hi, "rewards." + k);
+  for (const k of ["battle", "kill", "win"])
+    if (RW.xp?.[k] != null)
+      st.rewards.xp[k] = num(RW.xp[k], 0, 1e4, "rewards.xp." + k);
+  for (const r of ["Common", "Rare", "Epic", "Legendary"])
+    if (RW.rarityMult?.[r] != null)
+      st.rewards.rarityMult[r] = num(RW.rarityMult[r], 0, 100, r);
+  const SO = b.store || {};
+  for (const [k, [lo, hi]] of Object.entries({
+    maxItemsPerBattle: [0, 20],
+    levelCost: [0, 1e6],
+    maxLevel: [1, 50],
+    exchangeRate: [0, 100],
+    exchangeDailyCap: [0, 1e7],
+    xpPerLevel: [0, 1e6],
+    unlockEvery: [1, 20],
+    ultimateLevel: [1, 50],
+    rankEvery: [1, 50],
+    rankBonus: [0, 2],
+  }))
+    if (SO[k] != null) st.store[k] = num(SO[k], lo, hi, "store." + k);
+  if (SO.exchangeDuringAuction != null)
+    st.store.exchangeDuringAuction = !!SO.exchangeDuringAuction;
+  for (const id of Object.keys(ITEMS))
+    if (SO.prices?.[id] != null)
+      st.store.prices[id] = num(SO.prices[id], 0, 1e6, ITEMS[id].name + " price");
+  for (const k of ["attack", "defence", "maxHealth"])
+    if (SO.levelGain?.[k] != null)
+      st.store.levelGain[k] = num(SO.levelGain[k], 0, 1, "levelGain." + k);
   G.logEv("admin.settings.updated", {
     actor: actor(s),
     vis: "admin",
@@ -884,11 +1032,13 @@ route("post", "/admin/restore", "admin", (req, s) => {
     characters: f.characters,
     teams: f.teams,
     battles: f.battles,
+    tournaments: Array.isArray(f.tournaments) ? f.tournaments : [], // older backups have none
     history: f.history,
     auction: f.auction,
     settings: f.settings,
   });
   db.players.players = f.players;
+  upgrade();
   for (const k in db.players.sessions)
     if (db.players.sessions[k].role === "player") delete db.players.sessions[k];
   G.logEv("admin.backup.restored", {
@@ -897,6 +1047,7 @@ route("post", "/admin/restore", "admin", (req, s) => {
   });
   G.bootAuction();
   G.bootBattles();
+  G.tickTournaments();
   Object.keys(NAMES).forEach((k) => persist(k));
   io.emit("ev", { t: "data" });
   io.emit("ev", { t: "auction" });
@@ -913,6 +1064,7 @@ route("post", "/admin/reset", "admin", (req, s) => {
   db.characters = buildChars();
   db.teams = [];
   db.battles = [];
+  db.tournaments = [];
   db.auction = defaultAuction();
   db.settings = {
     ...defaultSettings(),
@@ -920,6 +1072,8 @@ route("post", "/admin/reset", "admin", (req, s) => {
     rosterLimit: keep.rosterLimit,
     auction: keep.auction,
     battle: keep.battle,
+    rewards: keep.rewards,
+    store: keep.store,
   };
   db.players.players.forEach((p) => {
     p.teamId = null;
@@ -968,11 +1122,11 @@ if (!process.env.NO_LISTEN)
     console.log(`Marvel Arena running on http://localhost:${PORT}`),
   );
 process.on("SIGINT", async () => {
-  await idle();
+  await close();
   process.exit(0);
 });
 process.on("SIGTERM", async () => {
-  await idle();
+  await close();
   process.exit(0);
 });
 export { http, io, idle };

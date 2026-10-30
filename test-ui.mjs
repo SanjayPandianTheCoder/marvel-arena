@@ -187,8 +187,8 @@ ok(
 );
 const html = w.document.getElementById("view").innerHTML;
 ok(
-  !/balance|ledger/i.test(html.replace(/private limit/gi, "")),
-  "auction page has no balance/ledger data",
+  !/balance|ledger/i.test(html.replace(/Your balance/g, "")),
+  "auction page shows no balance/ledger data except the player's own balance",
 );
 w.document.querySelector("[data-act=bid]").click();
 await wait(800);

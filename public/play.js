@@ -13,7 +13,7 @@ route(
         ? '<p class="mut">Log in as a player to bid. You are spectating.</p>'
         : a.status !== "live"
           ? '<p class="mut">Bidding is closed while the auction is paused.</p>'
-          : `<p class="mut">Your private limit for this bid: <b style="color:var(--gold)">${me.max}</b></p><div class="row"><button class="btn red" data-act="bid" data-amt="${c.next}" ${me.canBid ? "" : "disabled"}>Bid ${c.next}</button><input type="number" id="amt" data-keep min="${c.next}" step="${a.increment}" aria-label="Custom bid" placeholder="Custom"><button class="btn" data-act="bid" data-custom="1" ${me.canBid ? "" : "disabled"}>Set bid</button></div>
+          : `<p class="mut">Your balance: <b style="color:var(--gold)">${me.balance}</b>${me.blocked ? ` · <span class="bad">${esc(me.blocked)}</span>` : ""}</p><div class="row"><button class="btn red" data-act="bid" data-amt="${c.next}" ${me.canBid ? "" : "disabled"}>Bid ${c.next}</button><input type="number" id="amt" data-keep min="${c.next}" step="${a.increment}" aria-label="Custom bid" placeholder="Custom"><button class="btn" data-act="bid" data-custom="1" ${me.canBid ? "" : "disabled"}>Set bid</button></div>
   <div class="row" style="margin-top:8px"><button class="btn gold" data-act="pass" ${me.leading || me.passed ? "disabled" : ""}>${me.passed ? "You passed" : "Pass this hero"}</button><small class="mut">${me.leading ? "You lead – you cannot pass." : me.passed ? "You are out of this lot." : "Passing is final for this lot. It sells when all others pass."}</small></div>`;
     return {
       html: `<div class="row sp"><h1 style="font-size:2.6rem">AUCTION ROOM</h1><span class="state">${a.status.toUpperCase()}</span></div>${a.status === "idle" || a.status === "ready" ? '<div class="panel"><p>The auction has not started. Waiting for the admin.</p></div>' : ""}
@@ -185,16 +185,14 @@ route(
         api("/state"),
         pl ? api("/battles/suggest") : [],
       ]),
-      mine = SESS?.teamId,
+      mine = s.session?.teamId,
       done = ["Finished", "BattleCancelled", "Declined"],
       max = s.settings.rosterLimit,
       size = s.settings.squadSize;
     const open = b.filter((x) => !done.includes(x.state));
-    const inv = open.filter(
-        (x) => x.state === "WaitingForPlayers" && x.invite.to === mine,
-      ),
+    const inv = open.filter((x) => x.incoming),
       out = open.filter(
-        (x) => x.state === "WaitingForPlayers" && x.invite.from === mine,
+        (x) => x.state === "WaitingForPlayers" && x.mine && !x.incoming,
       ),
       run = open.filter((x) => x.state !== "WaitingForPlayers"),
       sizeIn = (id, v = size) =>

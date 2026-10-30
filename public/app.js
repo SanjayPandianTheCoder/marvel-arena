@@ -3,7 +3,8 @@ const $ = (s, r = document) => r.querySelector(s),
   $$ = (s, r = document) => [...r.querySelectorAll(s)];
 let SESS = JSON.parse(localStorage.arena_sess || "null"),
   sock = null,
-  tmr = null;
+  tmr = null,
+  INV = [];
 const esc = (s) =>
   String(s ?? "").replace(
     /[&<>"']/g,
@@ -71,8 +72,28 @@ function connect() {
   let t;
   sock.on("ev", (e) => {
     clearTimeout(t);
-    t = setTimeout(() => live && render(true), 180);
+    t = setTimeout(() => {
+      if (live) render(true);
+      if (e.t === "battle") invites();
+    }, 180);
   });
+  invites();
+}
+// incoming challenges show on every page: a count on the Battles link and a toast when a new one arrives
+async function invites() {
+  const was = INV.map((x) => x.id);
+  INV =
+    SESS?.role === "player"
+      ? await api("/battles/invites").catch(() => INV)
+      : [];
+  const n = INV.filter((x) => !was.includes(x.id));
+  if (n.length)
+    toast(
+      n.length > 1
+        ? `⚔ ${n.length} new battle invitations: open Battles`
+        : `⚔ ${n[0].from} challenged you: open Battles`,
+    );
+  nav();
 }
 let live = false;
 /* ---------- router ---------- */
@@ -157,7 +178,7 @@ function nav() {
     ],
     cur = "#" + (location.hash.slice(1) || "/");
   $("#hdr").innerHTML =
-    `<header class="top"><a class="logo" href="#/">MARVEL<b>ARENA</b></a><nav aria-label="Main">${L.map(([h, n]) => `<a href="#${h}" class="${cur === "#" + h || (h !== "/" && cur.startsWith("#" + h)) ? "on" : ""}">${n}</a>`).join("")}</nav><span style="margin-left:auto;white-space:nowrap">${SESS ? `<small>${esc(SESS.name)} (${SESS.role})</small> <button class="btn sm" data-act="logout">Log out</button>` : '<a class="btn sm red" href="#/login">Log in</a>'}</span><button class="btn sm" data-act="motion" aria-label="Toggle animations" title="Toggle animations">✨</button></header>`;
+    `<header class="top"><a class="logo" href="#/">MARVEL<b>ARENA</b></a><nav aria-label="Main">${L.map(([h, n]) => `<a href="#${h}" class="${cur === "#" + h || (h !== "/" && cur.startsWith("#" + h)) ? "on" : ""}">${n}${h === "/battles" && INV.length ? ` <span class="tag" style="color:var(--gold)" title="Battle invitations waiting for you">${INV.length}</span>` : ""}</a>`).join("")}</nav><span style="margin-left:auto;white-space:nowrap">${SESS ? `<small>${esc(SESS.name)} (${SESS.role})</small> <button class="btn sm" data-act="logout">Log out</button>` : '<a class="btn sm red" href="#/login">Log in</a>'}</span><button class="btn sm" data-act="motion" aria-label="Toggle animations" title="Toggle animations">✨</button></header>`;
 }
 const acts = {};
 const act = (n, f) =>

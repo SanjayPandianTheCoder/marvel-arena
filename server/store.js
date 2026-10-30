@@ -200,8 +200,40 @@ export const persist = (...ks) => {
   ks.forEach((k) => dirty.add(k));
   q = q.then(flush);
 };
+/* single-document parts (e.g. settings) edited in the database directly are re-read every few seconds and handed to
+   onChange(k, value), which adopts them into db[k] or rejects them; either way it calls persist(k), so a rejected edit is
+   overwritten by the in-memory copy. Checks run in the write queue, so they never overlap a write; a part with an
+   unwritten local change is skipped (the local change wins). A deleted document is written back from memory. */
+let watcher = null;
+export function watch(keys, onChange, ms = 5000) {
+  async function check() {
+    for (const k of keys) {
+      const p = PARTS[k][0],
+        s = seen.get(pkey(p));
+      if (dirty.has(k) || !s) continue;
+      const d = await mdb.collection(p.coll).findOne({ _id: p.id });
+      if (!d) {
+        if (s.size) {
+          s.delete(p.id);
+          persist(k);
+        }
+        continue;
+      }
+      const j = JSON.stringify({ value: d.value });
+      if (s.get(p.id) === j) continue;
+      s.set(p.id, j); // what the database holds now, so the next write sends whatever differs from it
+      onChange(k, d.value);
+    }
+  }
+  clearInterval(watcher);
+  watcher = setInterval(() => {
+    q = q.then(check).catch((e) => console.error("[db] reading external changes failed:", e.message));
+  }, ms);
+  watcher.unref();
+}
 export const idle = () => q;
 export const close = async () => {
+  clearInterval(watcher);
   await idle();
   await client?.close();
 };

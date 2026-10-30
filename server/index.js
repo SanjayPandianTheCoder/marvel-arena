@@ -12,6 +12,7 @@ import {
   uid,
   VALID,
   KEYS,
+  watch,
 } from "./store.js";
 import {
   defaults,
@@ -70,6 +71,31 @@ if (!db.admin) {
   console.log("  Admin password set from ADMIN_PASSWORD");
 }
 G.setNotify((t, id) => io.emit("ev", { t, id }));
+// settings edited directly in MongoDB (e.g. Atlas) apply without a restart, after the admin page's range checks;
+// a rejected edit is overwritten in the database by the settings in use
+watch(["settings"], (k, v) => {
+  try {
+    if (!VALID.settings(v))
+      bad("auction, battle and startingBudget are required");
+    const next = fillIn(structuredClone(v), defaultSettings());
+    applySettings(next, v);
+    db.settings = next;
+    G.logEv("admin.settings.updated", {
+      vis: "admin",
+      d: { changed: true, source: "database" },
+    });
+  } catch (e) {
+    const m = `Settings edited in the database were rejected (${e.message}); the settings in use were written back`;
+    console.warn("[db]", m);
+    warnings.push(m);
+    G.logEv("admin.settings.rejected", {
+      vis: "admin",
+      d: { reason: e.message, source: "database" },
+    });
+  }
+  persist("settings");
+  io.emit("ev", { t: "data" });
+});
 G.bootAuction();
 G.bootBattles();
 G.tickTournaments();
@@ -433,10 +459,20 @@ route("get", "/battles", null, (req, s) =>
       practice: !!b.practice,
       tournament: b.tournament?.name || null,
       mine: !!s?.teamId && b.teams.includes(s.teamId),
+      // waiting for the caller's reply (decided from the session, not the client's stored team)
+      incoming: incoming(b, s),
       disputes: b.disputes.length,
     })),
 );
+const incoming = (b, s) =>
+  b.state === "WaitingForPlayers" && !!s?.teamId && b.invite?.to === s.teamId;
 route("get", "/battles/suggest", "player", (req, s) => G.suggest(s.teamId));
+// challenges waiting for the caller's reply, polled by every page so invites show outside the battle lobby
+route("get", "/battles/invites", "player", (req, s) =>
+  db.battles
+    .filter((b) => incoming(b, s))
+    .map((b) => ({ id: b.id, from: G.teamName(b.invite.from) })),
+);
 route("get", "/battles/:id", null, (req, s) => {
   const b = bt(req.params.id),
     v = G.battleView(b, s, s?.role === "admin");
@@ -868,9 +904,21 @@ route("post", "/admin/tournaments/:id/tick", "admin", (req) => {
 });
 route("get", "/admin/settings", "admin", () => db.settings);
 route("put", "/admin/settings", "admin", (req, s) => {
-  const b = req.body || {},
-    st = db.settings,
-    before = JSON.stringify(st);
+  // checked on a copy, so a bad value leaves the settings in use untouched
+  const st = structuredClone(db.settings),
+    before = JSON.stringify(db.settings);
+  applySettings(st, req.body || {});
+  db.settings = st;
+  G.logEv("admin.settings.updated", {
+    actor: actor(s),
+    vis: "admin",
+    d: { changed: before !== JSON.stringify(st) },
+  });
+  persist("settings");
+});
+// checks a (partial) settings object against the allowed ranges and copies it onto st; throws on the first bad value.
+// Used by the admin page and for settings edited directly in the database.
+function applySettings(st, b) {
   if (b.startingBudget != null)
     st.startingBudget = num(b.startingBudget, 0, 1e7, "Starting budget");
   if (b.rosterLimit != null)
@@ -926,7 +974,13 @@ route("put", "/admin/settings", "admin", (req, s) => {
       if (B.actions[k])
         for (const f of Object.keys(st.battle.actions[k]))
           if (B.actions[k][f] != null)
-            st.battle.actions[k][f] = num(B.actions[k][f], 0, 10, k + "." + f);
+            // cost and gain are energy (0–100); power, mag, heal, acc and cd are small multipliers/turns
+            st.battle.actions[k][f] = num(
+              B.actions[k][f],
+              0,
+              ["cost", "gain"].includes(f) ? 100 : 10,
+              k + "." + f,
+            );
   }
   const RW = b.rewards || {};
   for (const [k, [lo, hi]] of Object.entries({
@@ -972,13 +1026,7 @@ route("put", "/admin/settings", "admin", (req, s) => {
   for (const k of ["attack", "defence", "maxHealth"])
     if (SO.levelGain?.[k] != null)
       st.store.levelGain[k] = num(SO.levelGain[k], 0, 1, "levelGain." + k);
-  G.logEv("admin.settings.updated", {
-    actor: actor(s),
-    vis: "admin",
-    d: { changed: before !== JSON.stringify(st) },
-  });
-  persist("settings");
-});
+}
 route("get", "/admin/history", "admin", (req) => {
   const q = req.query;
   let ev = db.history;

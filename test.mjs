@@ -97,15 +97,24 @@ ok(
   "player token cannot use admin API",
 );
 /* privacy */
+// the auction room shows the caller their own balance (in `me`); nothing else may carry one
+const { me: auMe, ...auPub } = (await call("GET", "/auction", null, B.token)).j;
 const pub = JSON.stringify([
   (await call("GET", "/teams", null, B.token)).j,
-  (await call("GET", "/auction", null, B.token)).j,
+  auPub,
   (await call("GET", "/leaderboard", null, B.token)).j,
   (await call("GET", "/battles", null, B.token)).j,
 ]);
 ok(
   !/balance|ledger|startingBalance/.test(pub),
   "public/other-player API responses contain no balances",
+);
+ok(
+  auMe.balance === (await call("GET", "/me", null, B.token)).j.team.balance &&
+    !/balance|ledger/.test(
+      JSON.stringify((await call("GET", "/auction")).j),
+    ),
+  "the auction shows a player only their own balance (none when logged out)",
 );
 const meA = (await call("GET", "/me", null, A.token)).j;
 ok(meA.team.balance === 1000, "player sees own balance (1000)");
@@ -128,6 +137,36 @@ await call(
   },
   adm,
 );
+// the admin settings form sends every field back; unchanged settings must always save
+const full = (await call("GET", "/admin/settings", null, adm)).j,
+  saved = await call("PUT", "/admin/settings", full, adm);
+ok(saved.s === 200, "saving the full settings form unchanged succeeds" + (saved.j.error ? ": " + saved.j.error : ""));
+ok(
+  (await call("PUT", "/admin/settings", { startingBudget: 5, rosterLimit: 9999 }, adm)).s === 400 &&
+    (await call("GET", "/admin/settings", null, adm)).j.startingBudget === full.startingBudget,
+  "a rejected settings save changes nothing",
+);
+// settings edited directly in MongoDB are picked up by the running server (checked every 5 s)
+await wait(300); // let the PUT above reach the database
+await mdb
+  .collection("meta")
+  .updateOne({ _id: "settings" }, { $set: { "value.minRoster": 2 } });
+await wait(6000);
+ok(
+  (await call("GET", "/admin/settings", null, adm)).j.minRoster === 2,
+  "settings edited in the database apply without a restart",
+);
+await mdb
+  .collection("meta")
+  .updateOne({ _id: "settings" }, { $set: { "value.rosterLimit": 9999 } });
+await wait(6000);
+ok(
+  (await call("GET", "/admin/settings", null, adm)).j.rosterLimit === 2 &&
+    (await mdb.collection("meta").findOne({ _id: "settings" })).value
+      .rosterLimit === 2,
+  "an out-of-range settings edit in the database is rejected and written back",
+);
+await call("PUT", "/admin/settings", { minRoster: 1 }, adm);
 const chars = (await call("GET", "/characters")).j,
   id = (n) => chars.find((c) => c.name.startsWith(n)).id;
 const pool = ["Iron Man", "Spider-Man (", "Thor Odinson", "Wolverine"].map(id);
@@ -252,6 +291,23 @@ const ch = (
   )
 ).j;
 ok(ch.id, "Alpha challenges Beta (2v2)");
+const invB = (await call("GET", "/battles/invites", null, B.token)).j;
+ok(
+  invB.length === 1 && invB[0].id === ch.id && invB[0].from === tA.name,
+  "the invited team sees the challenge in its invites",
+);
+ok(
+  !(await call("GET", "/battles/invites", null, A.token)).j.length,
+  "the challenger has no incoming invite",
+);
+const lobby = (T) =>
+  call("GET", "/battles", null, T.token).then((r) =>
+    r.j.find((x) => x.id === ch.id),
+  );
+ok(
+  (await lobby(B)).incoming && !(await lobby(A)).incoming,
+  "battle list marks the invite as incoming only for the invited team",
+);
 ok(
   (await call("POST", `/battles/${ch.id}/respond`, { accept: true }, A.token))
     .s === 403,

@@ -113,7 +113,11 @@ export const pubChar = (c, hide) =>
         energy: c.energy,
         maxEnergy: c.maxEnergy,
         abilities: abilitiesOf(c),
-        perks: perksAt(c.level).map(({ id, name, desc }) => ({ id, name, desc })),
+        perks: perksAt(c.level).map(({ id, name, desc }) => ({
+          id,
+          name,
+          desc,
+        })),
         teamUps: teamUpsOf(c.name).map((t) => ({
           name: t.name,
           partner: t.partner,
@@ -642,9 +646,18 @@ export function auctionView(sess) {
     },
     me: t && {
       teamId: t.id,
+      balance: t.balance, // the caller's own team only
       max: Math.max(0, maxBid(t)),
       leading: !!c && c.teamId === t.id,
       passed: !!c && c.passed.includes(t.id),
+      // why the next bid would be refused (roster full, funds after the slot reserve, …); empty when it would be accepted
+      blocked:
+        c &&
+        a.status === "live" &&
+        c.teamId !== t.id &&
+        !c.passed.includes(t.id)
+          ? bidError(t, nextBid(), c.charId)
+          : "",
       canBid:
         !!c &&
         a.status === "live" &&
@@ -679,8 +692,7 @@ const eligible = (t, mode) =>
   t.roster
     .map(getChar)
     .filter(
-      (c) =>
-        c && (mode !== "campaign" || (c.currentHealth > 0 && !resting(c))),
+      (c) => c && (mode !== "campaign" || (c.currentHealth > 0 && !resting(c))),
     );
 const inBattle = (teamId) =>
   db.battles.some((b) => active(b) && b.teams.includes(teamId));
@@ -762,8 +774,7 @@ export function counter(b, teamId, squadSize) {
   if (b.state !== "WaitingForPlayers") bad("Not awaiting a response");
   if (b.invite.to !== teamId)
     bad("Only the invited team can propose a change", 403);
-  if ((b.counters || 0) >= 3)
-    bad("Too many counter-offers: accept or decline");
+  if ((b.counters || 0) >= 3) bad("Too many counter-offers: accept or decline");
   const size = sizeOf(squadSize);
   if (size === b.squadSize) bad(`The challenge is already ${size}v${size}`);
   checkTeams(b.teams.map(getTeam), b.mode, size, b.bans || 0);
@@ -840,9 +851,7 @@ function openDraft(b) {
   b.pool = Object.fromEntries(
     b.teams.map((id) => [
       id,
-      id === BOT
-        ? b.pool[BOT]
-        : eligible(getTeam(id), b.mode).map((c) => c.id),
+      id === BOT ? b.pool[BOT] : eligible(getTeam(id), b.mode).map((c) => c.id),
     ]),
   );
   b.picks = Object.fromEntries(
@@ -878,7 +887,10 @@ function revealBans(b) {
   logEv("battle.banned", {
     battle: b.id,
     d: {
-      bans: b.teams.map((id) => ({ team: teamName(id), hero: b.banned[id].name })),
+      bans: b.teams.map((id) => ({
+        team: teamName(id),
+        hero: b.banned[id].name,
+      })),
     },
   });
   b.state = "SquadSelection";
@@ -892,7 +904,11 @@ export function pickSquad(b, teamId, ids) {
   if (b.state !== "SquadSelection") bad("Squad selection is not open");
   if (p.squad) return { already: true };
   const n = b.squadSize;
-  if (!Array.isArray(ids) || new Set(ids).size !== ids.length || ids.length !== n)
+  if (
+    !Array.isArray(ids) ||
+    new Set(ids).size !== ids.length ||
+    ids.length !== n
+  )
     bad(`Pick exactly ${n} different hero${n === 1 ? "" : "es"}`);
   if (ids.some((id) => !b.pool[teamId].includes(id)))
     bad("Pick heroes from your own available roster");
@@ -2053,7 +2069,8 @@ function payRewards(b, winner) {
   if (!r) return;
   // bigger squads pay a bigger win/draw/flawless bonus
   const long = b.turns.length >= RW().minTurnsForBonus,
-    f = (b.rewardFactor ?? 1) * (1 + RW().squadBonus * ((b.squadSize || 1) - 1));
+    f =
+      (b.rewardFactor ?? 1) * (1 + RW().squadBonus * ((b.squadSize || 1) - 1));
   b.teams.forEach((id) => {
     const x = r[id],
       t = getTeam(id),
@@ -2370,7 +2387,10 @@ export function createTournament(o, actor) {
   }
   const t = {
     id: uid("tr"),
-    name: String(o.name || "").trim().slice(0, 40) || "Tournament",
+    name:
+      String(o.name || "")
+        .trim()
+        .slice(0, 40) || "Tournament",
     status: "running",
     created: new Date().toISOString(),
     mode,
